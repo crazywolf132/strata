@@ -294,3 +294,13 @@ func RevertToCommit(commitHash string) error {
 	}
 	return nil
 }
+
+// GetGitDir returns the absolute path to the .git directory
+func GetGitDir() (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to find .git directory: %v\n%s", err, string(out))
+	}
+	return strings.TrimSpace(string(out)), nil
+}

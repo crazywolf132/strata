@@ -8,9 +8,6 @@ import (
 )
 
 func main() {
-
-	logs.InitLogger() // Initialize logging
-
 	if err := cmd.Execute(); err != nil {
 		logs.Error("CLI error: %v", err)
 		fmt.Fprintln(os.Stderr, "Error: ", err)

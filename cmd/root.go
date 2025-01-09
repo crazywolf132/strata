@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"strata/internal/ui"
+
 	"github.com/spf13/cobra"
 )
 
@@ -36,4 +38,6 @@ func init() {
 		newServerCmd(),
 		newCICmd(),
 	)
+
+	rootCmd.SetUsageTemplate(ui.ColorHeadings(rootCmd.UsageTemplate()))
 }

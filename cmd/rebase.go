@@ -30,8 +30,6 @@ func newRebaseCmd() *cobra.Command {
 
 			fmt.Printf("Branch '%s' succesfully rebased onto '%s'.\n", branch, onto)
 			return nil
-
-			return nil
 		},
 	}
 }

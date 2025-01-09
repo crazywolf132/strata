@@ -54,6 +54,8 @@ func init() {
 		newRebaseCmd(),
 		newServerCmd(),
 		newCICmd(),
+		newNextCmd(),
+		newPrevCmd(),
 	)
 
 	rootCmd.SetUsageTemplate(ui.ColorHeadings(rootCmd.UsageTemplate()))

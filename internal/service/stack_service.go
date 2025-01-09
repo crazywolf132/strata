@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"os/exec"
 	"strata/internal/git"
 	"strata/internal/hooks"
 	"strata/internal/logs"
@@ -146,8 +147,13 @@ func (s *StackService) MergeLayer(branch string) error {
 
 // UpdateEntireStack attempts to rebase each child on its parent, topologically
 func (s *StackService) UpdateEntireStack() error {
+	// Create a save point for the entire update operation
+	txTag := git.CreateTxTag("stack-update")
+	defer git.CleanupTxTag(txTag)
+
 	// We'll do a topological sort: first update branches whose parents are up to date.
 	updated := map[string]bool{}
+	toDelete := []string{} // Track branches to remove
 
 	for {
 		progressed := false
@@ -165,11 +171,24 @@ func (s *StackService) UpdateEntireStack() error {
 				updated[br] = true
 				progressed = true
 			} else {
+				// Check if branch is merged upstream
+				isMerged, err := git.IsBranchMergedUpstream(br)
+				if err != nil {
+					logs.Warn("Failed to check if '%s' is merged: %v", br, err)
+				} else if isMerged {
+					logs.Info("Branch '%s' has been merged upstream, will be removed from stack", br)
+					toDelete = append(toDelete, br)
+					updated[br] = true
+					progressed = true
+					continue
+				}
+
 				// only proceed if parent is updated
 				if updated[p] {
 					// rebase br onto p
-					logs.Info("Rebasing '%s' onto '%s' during stack updated...", br, p)
+					logs.Info("Rebasing '%s' onto '%s' during stack update...", br, p)
 					if err := git.RebaseBranch(br, p); err != nil {
+						git.RevertToTag(txTag)
 						return fmt.Errorf("rebase failed for '%s': %v", br, err)
 					}
 
@@ -189,8 +208,81 @@ func (s *StackService) UpdateEntireStack() error {
 		}
 	}
 
+	// Process merged branches in order (parents before children)
+	for len(toDelete) > 0 {
+		br := toDelete[0]
+		toDelete = toDelete[1:]
+		node := s.stack[br]
+		if node == nil {
+			continue
+		}
+
+		// Create a save point for this branch removal operation
+		branchTxTag := git.CreateTxTag(fmt.Sprintf("remove-%s", br))
+
+		parent := node.ParentBranch
+		if parent == "" {
+			parent = "main" // Default to main if no parent
+		}
+
+		// First rebase all children onto the parent
+		for _, child := range node.Children {
+			childNode, exists := s.stack[child]
+			if !exists {
+				continue
+			}
+
+			logs.Info("Rebasing child '%s' onto parent '%s' before removing merged branch '%s'", child, parent, br)
+			if err := git.RebaseBranch(child, parent); err != nil {
+				logs.Error("Failed to rebase child '%s' onto '%s': %v", child, parent, err)
+				git.RevertToTag(branchTxTag)
+				git.CleanupTxTag(branchTxTag)
+				continue
+			}
+
+			// Update child's parent reference
+			childNode.ParentBranch = parent
+			childNode.UpdatedAt = time.Now()
+
+			// Add child to parent's children list
+			if parentNode, ok := s.stack[parent]; ok {
+				parentNode.Children = append(parentNode.Children, child)
+			}
+		}
+
+		// Remove the branch from its parent's children list
+		if parentNode, ok := s.stack[parent]; ok {
+			newChildren := make([]string, 0, len(parentNode.Children))
+			for _, child := range parentNode.Children {
+				if child != br {
+					newChildren = append(newChildren, child)
+				}
+			}
+			parentNode.Children = newChildren
+		}
+
+		// Delete the branch locally if it exists
+		cmd := exec.Command("git", "branch", "-D", br)
+		if err := cmd.Run(); err != nil {
+			logs.Warn("Failed to delete local branch '%s': %v", br, err)
+		}
+
+		// Remove the branch from the stack
+		delete(s.stack, br)
+		logs.Info("Removed merged branch '%s' from stack", br)
+
+		// Save after each branch removal to ensure we don't lose state
+		if err := store.SaveStack(s.stack); err != nil {
+			git.RevertToTag(branchTxTag)
+			git.CleanupTxTag(branchTxTag)
+			return fmt.Errorf("failed to save stack after removing branch '%s': %v", br, err)
+		}
+
+		git.CleanupTxTag(branchTxTag)
+	}
+
 	hooks.RunHooks("updateStack", "")
-	return store.SaveStack(s.stack)
+	return nil
 }
 
 func (s *StackService) ViewStackTree() (string, error) {

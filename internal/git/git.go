@@ -55,12 +55,12 @@ func RenameBranch(oldName, newName string) error {
 
 func MergeBranch(src, target string) error {
 	// Create a save point
-	txTag := createTxTag("merge")
-	defer cleanupTxTag(txTag)
+	txTag := CreateTxTag("merge")
+	defer CleanupTxTag(txTag)
 
 	// checkout target
 	if err := checkoutBranch(target); err != nil {
-		revertToTag(txTag)
+		RevertToTag(txTag)
 		return err
 	}
 
@@ -68,27 +68,29 @@ func MergeBranch(src, target string) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		exec.Command("git", "merge", "--abort").Run()
-		revertToTag(txTag)
+		RevertToTag(txTag)
 		return fmt.Errorf("merge %s -> %s failed: %v\n%s", src, target, err, string(out))
 	}
 	return nil
 }
 
-// createTxTag creates a temporary tag like `strata-tx-merge-<timestamp>`
-func createTxTag(prefix string) string {
+// CreateTxTag creates a temporary tag like `strata-tx-<prefix>-<timestamp>`
+func CreateTxTag(prefix string) string {
 	t := time.Now().UnixNano()
 	tagName := fmt.Sprintf("strata-tx-%s-%d", prefix, t)
 	exec.Command("git", "tag", tagName).Run() // Ignoring error
 	return tagName
 }
 
-func revertToTag(tag string) {
+// RevertToTag reverts HEAD to the specified tag
+func RevertToTag(tag string) {
 	// revert HEAD to that tag
 	cmd := exec.Command("git", "reset", "--hard", tag)
 	cmd.Run() // ignore errors (we do best effort)
 }
 
-func cleanupTxTag(tag string) {
+// CleanupTxTag removes the specified transaction tag
+func CleanupTxTag(tag string) {
 	// remove the tag
 	exec.Command("git", "tag", "-d", tag).Run()
 }
@@ -118,16 +120,16 @@ func PushCurrentBranch() error {
 // RebaseBranch performs an interactive rebase with fallback to manual conflict resolution prompt
 func RebaseBranch(branch, onto string) error {
 	// Create a save point
-	txTag := createTxTag("rebase")
-	defer cleanupTxTag(txTag)
+	txTag := CreateTxTag("rebase")
+	defer CleanupTxTag(txTag)
 
 	if err := ensureCleanWorkingTree(); err != nil {
-		revertToTag(txTag)
+		RevertToTag(txTag)
 		return err
 	}
 	// checkout the target branch
 	if err := checkoutBranch(branch); err != nil {
-		revertToTag(txTag)
+		RevertToTag(txTag)
 		return err
 	}
 
@@ -139,7 +141,7 @@ func RebaseBranch(branch, onto string) error {
 			cErr := handleRebaseConflict()
 			if cErr != nil {
 				// user might abort
-				revertToTag(txTag)
+				RevertToTag(txTag)
 				return cErr
 			}
 			// If the user successfully continues, it's presumably fine
@@ -147,7 +149,7 @@ func RebaseBranch(branch, onto string) error {
 		}
 		// general fail
 		exec.Command("git", "rebase", "--abort").Run()
-		revertToTag(txTag)
+		RevertToTag(txTag)
 		return fmt.Errorf("rebase %s onto %s failed: %v\n%s", branch, onto, err, string(out))
 	}
 	return nil
@@ -303,4 +305,37 @@ func GetGitDir() (string, error) {
 		return "", fmt.Errorf("failed to find .git directory: %v\n%s", err, string(out))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// IsBranchMergedUpstream checks if a branch has been merged into its upstream branch
+func IsBranchMergedUpstream(branch string) (bool, error) {
+	// First, fetch to ensure we have latest remote info
+	if err := FetchAll(); err != nil {
+		return false, err
+	}
+
+	// Check if branch exists on remote
+	cmd := exec.Command("git", "ls-remote", "--heads", "origin", branch)
+	out, err := cmd.CombinedOutput()
+	if err != nil || len(out) == 0 {
+		// Branch doesn't exist on remote, so can't be merged
+		return false, nil
+	}
+
+	// Get the merge-base (common ancestor) with origin/HEAD
+	cmd = exec.Command("git", "merge-base", branch, "origin/HEAD")
+	mergeBase, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("failed to find merge-base: %v\n%s", err, string(mergeBase))
+	}
+
+	// Get the latest commit of the branch
+	cmd = exec.Command("git", "rev-parse", branch)
+	branchCommit, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("failed to get branch commit: %v\n%s", err, string(branchCommit))
+	}
+
+	// If merge-base equals branch commit, the branch is merged
+	return strings.TrimSpace(string(mergeBase)) == strings.TrimSpace(string(branchCommit)), nil
 }
